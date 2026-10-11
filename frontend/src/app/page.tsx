@@ -1,0 +1,9 @@
+import {ContinueWatching} from '../components/continue-watching';
+import Link from 'next/link';
+import {CatalogueShell,CatalogueMessage,MovieGrid,SearchForm} from '../components/catalogue';
+import {getMovies} from '../lib/catalogue';
+export const dynamic='force-dynamic';
+export default async function Home(){
+ const {data}=await getMovies({q:'',page:1,sort:'newest'},8);const featured=data?.items[0];
+ return <CatalogueShell><section className="cinema-hero" aria-labelledby="hero-title"><div className="cinema-art" aria-hidden="true"><div className="cinema-sun"/><div className="cinema-horizon"/><span>SUNI / CINEMA</span></div><div className="cinema-hero-copy"><p className="eyebrow">{featured?'MỚI TRONG THƯ VIỆN':'ĐIỆN ẢNH. THEO CÁCH CỦA BẠN.'}</p><h1 id="hero-title">{featured?featured.title:<>Một câu chuyện.<br/><em>Muôn cảm xúc.</em></>}</h1><p className="hero-description">{featured?featured.synopsis||'Khám phá thông tin về bộ phim mới trong thư viện Suni.':'Tìm một thế giới để bước vào. Một nhân vật để đồng cảm. Một câu chuyện để mang theo.'}</p><Link className="button" href={featured?`/movies/${featured.slug}`:'/movies'}>{featured?'Khám phá bộ phim':'Khám phá phim'} ↗</Link>{featured&&<p className="hero-meta">{featured.release_year??'Chưa rõ năm'} · {featured.required_plan_code.toUpperCase()}</p>}</div><div className="cinema-caption"><span>YOUR NEXT STORY STARTS HERE</span><span>01 / KHÁM PHÁ</span></div></section><ContinueWatching/><section className="catalogue-section" aria-labelledby="library-title"><div className="section-heading"><div><p className="eyebrow">CHỌN CÂU CHUYỆN TIẾP THEO</p><h2 id="library-title">Mới trong thư viện</h2></div><Link className="text-link" href="/movies">Tất cả phim →</Link></div><SearchForm/>{!data?<CatalogueMessage error/>:data.items.length?<MovieGrid items={data.items}/>:<CatalogueMessage/>}</section></CatalogueShell>;
+}

@@ -1,0 +1,46 @@
+# Requires Compose >= 2.24.4; always use WITH compose.yaml and a separate env file.
+# docker compose --env-file .env.production -p suni-production -f compose.yaml -f compose.production.yaml up -d --build --wait
+x-production-env: &production-env
+  APP_ENV: production
+  PUBLIC_ORIGIN: https://cinema.sunifactory.com
+  ALLOWED_HOSTS: api,localhost,127.0.0.1
+  PAYMENT_MODE: disabled
+  SEPAY_WEBHOOK_SECRET: ""
+  SEPAY_BANK: ""
+  SEPAY_ACCOUNT: ""
+  SEPAY_SUB_ACCOUNT: ""
+
+x-logs: &logs
+  driver: json-file
+  options: {max-size: "10m", max-file: "5"}
+
+services:
+  postgres:
+    logging: *logs
+    mem_limit: 1g
+    pids_limit: 256
+  redis:
+    logging: *logs
+    mem_limit: 512m
+    pids_limit: 128
+  db-bootstrap:
+    logging: *logs
+  migrate:
+    environment: *production-env
+  api:
+    environment: *production-env
+    ports: !reset []
+    networks: !override [internal]
+    mem_limit: 1g
+    pids_limit: 256
+  worker:
+    environment: *production-env
+  beat:
+    environment: *production-env
+    mem_limit: 256m
+    pids_limit: 128
+  web:
+    ports: !override ["127.0.0.1:8083:3000"]
+    logging: *logs
+    mem_limit: 1g
+    pids_limit: 256

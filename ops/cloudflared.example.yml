@@ -1,0 +1,8 @@
+# Template only; no connector is started by local Compose.
+# Replace the tunnel UUID and provision its credentials outside this repository.
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /etc/cloudflared/suni-tunnel.json
+ingress:
+  - hostname: cinema.sunifactory.com
+    service: http://127.0.0.1:8083
+  - service: http_status:404

@@ -1,0 +1,154 @@
+name: suni
+
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-development}
+  APP_SECRET: ${APP_SECRET:?Run python scripts/init_env.py first}
+  DATABASE_URL: postgresql+psycopg://suni_runtime:${RUNTIME_PASSWORD:?Run scripts/upgrade_env_stage02.py}@postgres:5432/${POSTGRES_DB:-suni}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+  PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,api}
+  POSTER_ALLOWED_HOSTS: ${POSTER_ALLOWED_HOSTS:-}
+  UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-1073741824}
+  MEDIA_QUOTA_BYTES: ${MEDIA_QUOTA_BYTES:-21474836480}
+  UPLOAD_ACTIVE_LIMIT: ${UPLOAD_ACTIVE_LIMIT:-3}
+  COMIC_QUOTA_BYTES: ${COMIC_QUOTA_BYTES:-2147483648}
+  PAYMENT_MODE: ${PAYMENT_MODE:-disabled}
+  SEPAY_WEBHOOK_SECRET: ${SEPAY_WEBHOOK_SECRET:-}
+  SEPAY_BANK: ${SEPAY_BANK:-}
+  SEPAY_ACCOUNT: ${SEPAY_ACCOUNT:-}
+  SEPAY_SUB_ACCOUNT: ${SEPAY_SUB_ACCOUNT:-}
+
+x-app: &app
+  build:
+    context: ./backend
+    target: base
+  environment: *app-env
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:size=128m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [internal]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    # Constraint errors must not write failing rows or SQL literals into server logs.
+    command: [postgres, -c, log_error_verbosity=terse, -c, log_min_error_statement=panic, -c, log_parameter_max_length_on_error=0, -c, log_statement=none]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-suni}
+      POSTGRES_DB: ${POSTGRES_DB:-suni}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [internal]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+  redis:
+    image: redis:7.4-bookworm
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes: [redis_data:/data]
+    networks: [internal]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+  db-bootstrap:
+    <<: *app
+    environment:
+      BOOTSTRAP_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-suni}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-suni}
+      MIGRATOR_PASSWORD: ${MIGRATOR_PASSWORD:?Run scripts/upgrade_env_stage02.py}
+      RUNTIME_PASSWORD: ${RUNTIME_PASSWORD:?Run scripts/upgrade_env_stage02.py}
+    command: [python, -m, app.bootstrap_db]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+  migrate:
+    <<: *app
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql+psycopg://suni_migrator:${MIGRATOR_PASSWORD:?Set MIGRATOR_PASSWORD}@postgres:5432/${POSTGRES_DB:-suni}
+    command: [python, -m, app.migrate]
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    restart: "no"
+  api:
+    <<: *app
+    volumes: [media_data:/var/lib/suni-media]
+    networks: [internal, edge]
+    ports: [127.0.0.1:8000:8000]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+  worker:
+    <<: *app
+    volumes: [media_data:/var/lib/suni-media]
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 128
+    command: [celery, -A, app.worker.celery_app, worker, --loglevel=WARNING, --concurrency=1, --hostname=worker@%h, --without-gossip, --without-mingle]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'celery -A app.worker.celery_app inspect ping --destination "worker@$$HOSTNAME" --timeout 5 | grep -q pong']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+  beat:
+    <<: *app
+    command: [celery, -A, app.worker.celery_app, beat, --loglevel=WARNING, --schedule=/tmp/celerybeat-schedule]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    environment:
+      API_INTERNAL_URL: http://api:8000
+      POSTER_ALLOWED_HOSTS: ${POSTER_ALLOWED_HOSTS:-}
+    ports: [127.0.0.1:3000:3000]
+    depends_on:
+      api: {condition: service_healthy}
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [internal, edge]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  edge:
+  internal:
+    internal: true
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:

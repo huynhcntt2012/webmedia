@@ -1,0 +1,67 @@
+# Standalone test project, not an override. Never points to development volumes.
+name: suni-integration-test
+x-test-env: &test-env
+  APP_ENV: test
+  APP_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  DATABASE_URL: postgresql+psycopg://suni_migrator:test-migrator-0123456789abcdef0123456789@postgres:5432/suni_test
+  REDIS_URL: redis://:test-only-password@redis:6379/0
+  ALLOWED_HOSTS: localhost,testserver,api
+services:
+  postgres:
+    image: postgres:17-bookworm
+    command: [postgres, -c, log_error_verbosity=terse, -c, log_min_error_statement=panic, -c, log_parameter_max_length_on_error=0, -c, log_statement=none]
+    environment:
+      POSTGRES_USER: suni
+      POSTGRES_PASSWORD: test-only-password
+      POSTGRES_DB: suni_test
+    tmpfs: [/var/lib/postgresql/data]
+    networks: [isolated]
+    healthcheck:
+      test: [CMD, pg_isready, -U, suni, -d, suni_test]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4-bookworm
+    command: [redis-server, --requirepass, test-only-password]
+    networks: [isolated]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=test-only-password redis-cli ping | grep -q PONG']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  worker:
+    volumes: [test_media:/var/lib/suni-media]
+    mem_limit: 2g
+    pids_limit: 128
+    build: {context: ./backend, target: base}
+    environment:
+      <<: *test-env
+      DATABASE_URL: postgresql+psycopg://suni_runtime:test-runtime-0123456789abcdef0123456789@postgres:5432/suni_test
+    command: [celery, -A, app.worker.celery_app, worker, --loglevel=WARNING, --concurrency=1]
+    networks: [isolated]
+    depends_on:
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+  tests:
+    init: true
+    volumes: [test_media:/var/lib/suni-media]
+    build: {context: ./backend, target: test}
+    environment:
+      <<: *test-env
+      RUN_INTEGRATION: "1"
+      RUNTIME_DATABASE_URL: postgresql+psycopg://suni_runtime:test-runtime-0123456789abcdef0123456789@postgres:5432/suni_test
+      BOOTSTRAP_DATABASE_URL: postgresql+psycopg://suni:test-only-password@postgres:5432/suni_test
+      MIGRATOR_PASSWORD: test-migrator-0123456789abcdef0123456789
+      RUNTIME_PASSWORD: test-runtime-0123456789abcdef0123456789
+    networks: [isolated]
+    depends_on:
+      worker: {condition: service_started}
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+networks:
+  isolated:
+    internal: true
+
+volumes:
+  test_media:
